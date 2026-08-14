@@ -47,11 +47,12 @@ struct Earthquake: Codable, Identifiable {
     enum Severity {
         case minor, moderate, strong
 
+        /// Copy do app em inglês (portfólio internacional).
         var label: String {
             switch self {
-            case .minor: "Fraco"
-            case .moderate: "Moderado"
-            case .strong: "Forte"
+            case .minor: "Minor"
+            case .moderate: "Moderate"
+            case .strong: "Strong"
             }
         }
     }

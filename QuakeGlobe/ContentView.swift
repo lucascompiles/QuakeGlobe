@@ -234,9 +234,7 @@ struct GlobeView: UIViewRepresentable {
             displayLink = nil
         }
 
-        /// Velocidade do pan proporcional ao zoom: longe = amplo, perto = cirúrgico.
-        /// Expoente = curva do freio: 1 linear · 1.5 recomendado · 2 cirúrgico.
-        /// A vista longe não muda (razão = 1), só o perto freia.
+        /// Velocidade do pan proporcional ao zoom (expoente 2.0: calibrado no device).
         private var panFactor: Float {
             0.009 * pow(currentDistance / maxDistance, 2.0)
         }
@@ -347,9 +345,20 @@ extension Earthquake.Severity {
 struct QuakeDetailSheet: View {
     let quake: Earthquake
 
+    /// Magnitude é notação científica (padrão USGS): ponto fixo, sem locale.
+    private var magnitudeText: String {
+        String(format: "%.1f", quake.magnitude)
+    }
+
+    private var coordinatesText: String {
+        String(format: "%.1f°%@, %.1f°%@",
+               abs(quake.latitude), quake.latitude >= 0 ? "N" : "S",
+               abs(quake.longitude), quake.longitude >= 0 ? "E" : "W")
+    }
+
     var body: some View {
         VStack(spacing: 14) {
-            Text("M \(quake.magnitude, specifier: "%.1f")")
+            Text("M \(magnitudeText)")
                 .font(.system(size: 46, weight: .bold, design: .rounded))
                 .foregroundStyle(quake.severity.color)
                 .padding(.top, 24)
@@ -361,7 +370,7 @@ struct QuakeDetailSheet: View {
                 .background(quake.severity.color.opacity(0.2), in: Capsule())
                 .foregroundStyle(quake.severity.color)
 
-            Text(quake.properties.place ?? "Local não informado")
+            Text(quake.properties.place ?? "Location not reported")
                 .font(.title3.weight(.semibold))
                 .foregroundStyle(.white)
                 .multilineTextAlignment(.center)
@@ -378,9 +387,17 @@ struct QuakeDetailSheet: View {
                     .foregroundStyle(.gray)
                 }
                 Label {
-                    Text("Profundidade: \(Int(quake.depthKm)) km")
+                    Text("Depth: \(Int(quake.depthKm)) km")
                 } icon: {
                     Image(systemName: "arrow.down.to.line")
+                }
+                .font(.subheadline)
+                .foregroundStyle(.gray)
+
+                Label {
+                    Text(coordinatesText)
+                } icon: {
+                    Image(systemName: "globe")
                 }
                 .font(.subheadline)
                 .foregroundStyle(.gray)
