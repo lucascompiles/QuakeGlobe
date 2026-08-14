@@ -40,6 +40,7 @@ struct GlobeView: UIViewRepresentable {
 
         let scene = SCNScene()
 
+        // Terra
         let earth = SCNSphere(radius: 1.0)
         earth.segmentCount = 96
 
@@ -52,6 +53,27 @@ struct GlobeView: UIViewRepresentable {
         earthNode.name = "earth"
         earthNode.eulerAngles.y = Float(75.0 * .pi / 180)
         scene.rootNode.addChildNode(earthNode)
+
+        // Nuvens: camada atmosférica elevada, com deriva própria
+        let clouds = SCNSphere(radius: 1.06)
+        clouds.segmentCount = 96
+
+        let cloudMaterial = SCNMaterial()
+        cloudMaterial.diffuse.contents = UIImage(named: "earth_clouds")
+        // >>> KNOB DE TRANSPARÊNCIA: 0 = invisível · 0.3 véu · 0.6 equilíbrio · 1 = denso
+        cloudMaterial.diffuse.intensity = 0.6
+        cloudMaterial.lightingModel = .constant
+        cloudMaterial.blendMode = .add
+        cloudMaterial.writesToDepthBuffer = false
+        clouds.materials = [cloudMaterial]
+
+        let cloudsNode = SCNNode(geometry: clouds)
+        cloudsNode.name = "clouds"
+        scene.rootNode.addChildNode(cloudsNode)
+
+        // Deriva lenta (1 volta a cada 4 min)
+        let drift = SCNAction.rotateBy(x: 0, y: 2 * .pi, z: 0, duration: 240)
+        cloudsNode.runAction(.repeatForever(drift))
 
         scnView.scene = scene
         return scnView
@@ -80,6 +102,7 @@ struct GlobeView: UIViewRepresentable {
 
             let node = SCNNode(geometry: sphere)
             node.name = "quake_\(quake.id)"
+            // Pontos NA Terra, abaixo da atmosfera
             node.position = surfacePosition(lat: quake.latitude, lon: quake.longitude, radius: 1.01)
             earthNode.addChildNode(node)
         }
