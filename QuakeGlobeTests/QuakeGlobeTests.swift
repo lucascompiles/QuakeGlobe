@@ -47,3 +47,22 @@ struct EarthquakeDecodingTests {
         #expect(feed.features[1].magnitude == 0)
     }
 }
+
+struct SeverityTests {
+
+    private func makeQuake(mag: Double?) -> Earthquake {
+        Earthquake(
+            id: "t",
+            geometry: .init(coordinates: [0, 0, 10]),
+            properties: .init(mag: mag, place: nil, time: nil)
+        )
+    }
+
+    @Test func severityThresholds() {
+        #expect(makeQuake(mag: 3.9).severity == .minor)
+        #expect(makeQuake(mag: 4.0).severity == .moderate)
+        #expect(makeQuake(mag: 5.4).severity == .moderate)
+        #expect(makeQuake(mag: 5.5).severity == .strong)
+        #expect(makeQuake(mag: nil).severity == .minor)
+    }
+}

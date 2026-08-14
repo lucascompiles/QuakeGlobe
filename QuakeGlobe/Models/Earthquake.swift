@@ -30,4 +30,29 @@ struct Earthquake: Codable, Identifiable {
     var latitude: Double { geometry.coordinates[1] }
     var depthKm: Double { geometry.coordinates.count > 2 ? geometry.coordinates[2] : 0 }
     var magnitude: Double { properties.mag ?? 0 }
+
+    var severity: Severity {
+        switch magnitude {
+        case ..<4.0: .minor
+        case ..<5.5: .moderate
+        default: .strong
+        }
+    }
+
+    var date: Date? {
+        guard let time = properties.time else { return nil }
+        return Date(timeIntervalSince1970: time / 1000)
+    }
+
+    enum Severity {
+        case minor, moderate, strong
+
+        var label: String {
+            switch self {
+            case .minor: "Fraco"
+            case .moderate: "Moderado"
+            case .strong: "Forte"
+            }
+        }
+    }
 }
