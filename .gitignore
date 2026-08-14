@@ -1,0 +1,10 @@
+# Xcode — estado de usuário (nunca commitar)
+xcuserdata/
+*.xcuserdatad
+
+# Build
+DerivedData/
+build/
+
+# macOS
+.DS_Store
