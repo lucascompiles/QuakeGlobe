@@ -50,6 +50,7 @@ struct GlobeView: UIViewRepresentable {
 
         let earthNode = SCNNode(geometry: earth)
         earthNode.name = "earth"
+        earthNode.eulerAngles.y = Float(75.0 * .pi / 180)
         scene.rootNode.addChildNode(earthNode)
 
         scnView.scene = scene
