@@ -7,6 +7,7 @@
 
 import SwiftUI
 import SceneKit
+import simd
 
 struct ContentView: View {
     @State private var earthquakes: [Earthquake] = []
@@ -34,7 +35,7 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Globo 3D
+// MARK: - Globo 3D com interação própria
 
 struct GlobeView: UIViewRepresentable {
     let earthquakes: [Earthquake]
@@ -44,14 +45,45 @@ struct GlobeView: UIViewRepresentable {
         Coordinator(self)
     }
 
+    static func dismantleUIView(_ uiView: SCNView, coordinator: Coordinator) {
+        coordinator.teardown()
+    }
+
     func makeUIView(context: Context) -> SCNView {
         let scnView = SCNView()
         scnView.backgroundColor = .black
-        scnView.allowsCameraControl = true
-        scnView.autoenablesDefaultLighting = true
         scnView.antialiasingMode = .multisampling4X
 
         let scene = SCNScene()
+
+        // Câmera explícita (zNear pequeno pra não clipar no zoom máximo)
+        let camera = SCNCamera()
+        camera.zNear = 0.01
+        let cameraNode = SCNNode()
+        cameraNode.camera = camera
+        cameraNode.position = SCNVector3(0, 0, context.coordinator.currentDistance)
+        scene.rootNode.addChildNode(cameraNode)
+
+        // Luz direcional filha da câmera (face visível acesa) + ambiente
+        let key = SCNLight()
+        key.type = .directional
+        key.intensity = 900
+        let keyNode = SCNNode()
+        keyNode.light = key
+        cameraNode.addChildNode(keyNode)
+
+        let ambient = SCNLight()
+        ambient.type = .ambient
+        ambient.intensity = 350
+        let ambientNode = SCNNode()
+        ambientNode.light = ambient
+        scene.rootNode.addChildNode(ambientNode)
+
+        // Container que gira (Terra + nuvens + marcadores)
+        let globeNode = SCNNode()
+        globeNode.name = "globe"
+        globeNode.eulerAngles.y = Float(75.0 * .pi / 180)
+        scene.rootNode.addChildNode(globeNode)
 
         // Terra
         let earth = SCNSphere(radius: 1.0)
@@ -64,8 +96,7 @@ struct GlobeView: UIViewRepresentable {
 
         let earthNode = SCNNode(geometry: earth)
         earthNode.name = "earth"
-        earthNode.eulerAngles.y = Float(75.0 * .pi / 180)
-        scene.rootNode.addChildNode(earthNode)
+        globeNode.addChildNode(earthNode)
 
         // Nuvens
         let clouds = SCNSphere(radius: 1.06)
@@ -81,31 +112,41 @@ struct GlobeView: UIViewRepresentable {
 
         let cloudsNode = SCNNode(geometry: clouds)
         cloudsNode.name = "clouds"
-        scene.rootNode.addChildNode(cloudsNode)
+        globeNode.addChildNode(cloudsNode)
 
         let drift = SCNAction.rotateBy(x: 0, y: 2 * .pi, z: 0, duration: 240)
         cloudsNode.runAction(.repeatForever(drift))
 
         scnView.scene = scene
 
-        // Toque → Coordinator
-        let tap = UITapGestureRecognizer(
-            target: context.coordinator,
-            action: #selector(Coordinator.handleTap(_:))
-        )
+        // Referências + display link (inércia e zoom suave)
+        context.coordinator.scnView = scnView
+        context.coordinator.globeNode = globeNode
+        context.coordinator.cameraNode = cameraNode
+        context.coordinator.startDisplayLink()
+
+        // Gestos
+        let pan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handlePan(_:)))
+        pan.maximumNumberOfTouches = 1
+        scnView.addGestureRecognizer(pan)
+
+        let pinch = UIPinchGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handlePinch(_:)))
+        scnView.addGestureRecognizer(pinch)
+
+        let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTap(_:)))
         scnView.addGestureRecognizer(tap)
 
         return scnView
     }
 
     func updateUIView(_ uiView: SCNView, context: Context) {
-        context.coordinator.parent = self   // mantém o coordinator em dia
+        context.coordinator.parent = self
         guard let earthNode = uiView.scene?.rootNode
-            .childNode(withName: "earth", recursively: false) else { return }
+            .childNode(withName: "earth", recursively: true) else { return }
         plotMarkers(on: earthNode)
     }
 
-    // MARK: Plot
+    // MARK: Plot (marcador visível + proxy de toque invisível)
 
     private func plotMarkers(on earthNode: SCNNode) {
         earthNode.childNodes
@@ -113,17 +154,31 @@ struct GlobeView: UIViewRepresentable {
             .forEach { $0.removeFromParentNode() }
 
         for quake in earthquakes {
-            let sphere = SCNSphere(radius: markerRadius(for: quake.magnitude))
             let color = quake.severity.uiColor
-            let material = SCNMaterial()
-            material.diffuse.contents = color
-            material.emission.contents = color
-            sphere.materials = [material]
+            let position = surfacePosition(lat: quake.latitude, lon: quake.longitude, radius: 1.01)
 
-            let node = SCNNode(geometry: sphere)
-            node.name = "quake_\(quake.id)"
-            node.position = surfacePosition(lat: quake.latitude, lon: quake.longitude, radius: 1.01)
-            earthNode.addChildNode(node)
+            // Marcador visível
+            let sphere = SCNSphere(radius: markerRadius(for: quake.magnitude))
+            let m = SCNMaterial()
+            m.diffuse.contents = color
+            m.emission.contents = color
+            sphere.materials = [m]
+            let vis = SCNNode(geometry: sphere)
+            vis.name = "quake_vis_\(quake.id)"
+            vis.position = position
+            earthNode.addChildNode(vis)
+
+            // Proxy de toque: invisível, ~2x maior — dedo não erra
+            let proxy = SCNSphere(radius: max(markerRadius(for: quake.magnitude) * 2.2, 0.035))
+            let pm = SCNMaterial()
+            pm.colorBufferWriteMask = []          // não desenha nada
+            pm.writesToDepthBuffer = false
+            proxy.materials = [pm]
+            let proxyNode = SCNNode(geometry: proxy)
+            proxyNode.name = "quake_\(quake.id)"
+            proxyNode.categoryBitMask = 2          // hitTest filtra por isso
+            proxyNode.position = position
+            earthNode.addChildNode(proxyNode)
         }
     }
 
@@ -140,28 +195,124 @@ struct GlobeView: UIViewRepresentable {
         return SCNVector3(Float(x), Float(y), Float(z))
     }
 
-    // MARK: Coordinator (ponte UIKit → SwiftUI)
+    // MARK: Coordinator
 
     final class Coordinator: NSObject {
         var parent: GlobeView
+        weak var scnView: SCNView?
+        var globeNode: SCNNode?
+        var cameraNode: SCNNode?
+
+        private var displayLink: CADisplayLink?
+
+        // Rotação (turntable: yaw no eixo do mundo, pitch na horizontal)
+        private var yaw: Float = Float(75.0 * .pi / 180)
+        private var pitch: Float = 0
+        private var velocityYaw: Float = 0
+        private var velocityPitch: Float = 0
+        private var inertiaActive = false
+
+        // Zoom suavizado
+        var currentDistance: Float = 3.0
+        private var targetDistance: Float = 3.0
+        private let minDistance: Float = 1.25
+        private let maxDistance: Float = 4.0
 
         init(_ parent: GlobeView) {
             self.parent = parent
         }
 
+        func startDisplayLink() {
+            teardown()
+            let link = CADisplayLink(target: self, selector: #selector(tick))
+            link.add(to: .main, forMode: .common)
+            displayLink = link
+        }
+
+        func teardown() {
+            displayLink?.invalidate()
+            displayLink = nil
+        }
+
+        /// Velocidade do pan proporcional ao zoom: longe = amplo, perto = cirúrgico.
+        /// Expoente = curva do freio: 1 linear · 1.5 recomendado · 2 cirúrgico.
+        /// A vista longe não muda (razão = 1), só o perto freia.
+        private var panFactor: Float {
+            0.009 * pow(currentDistance / maxDistance, 2.0)
+        }
+
+        private func applyOrientation() {
+            globeNode?.simdOrientation =
+                simd_quatf(angle: pitch, axis: SIMD3<Float>(1, 0, 0)) *
+                simd_quatf(angle: yaw, axis: SIMD3<Float>(0, 1, 0))
+        }
+
+        @objc private func tick(_ link: CADisplayLink) {
+            let dt = Float(link.targetTimestamp - link.timestamp)
+
+            // Inércia com decay exponencial
+            if inertiaActive {
+                yaw += velocityYaw * dt
+                pitch += velocityPitch * dt
+                pitch = min(max(pitch, -1.1), 1.1)
+
+                let decay = exp(-3.5 * dt)
+                velocityYaw *= decay
+                velocityPitch *= decay
+
+                if abs(velocityYaw) < 0.01, abs(velocityPitch) < 0.01 {
+                    inertiaActive = false
+                }
+                applyOrientation()
+            }
+
+            // Zoom interpolado (suave, sem pulo)
+            if abs(targetDistance - currentDistance) > 0.001 {
+                currentDistance += (targetDistance - currentDistance) * min(1, dt * 12)
+                cameraNode?.position = SCNVector3(0, 0, currentDistance)
+            }
+        }
+
+        @objc func handlePan(_ gesture: UIPanGestureRecognizer) {
+            guard gesture.view != nil else { return }
+
+            switch gesture.state {
+            case .began:
+                inertiaActive = false          // dedo encostou = inércia morre
+            case .changed:
+                let t = gesture.translation(in: gesture.view!)
+                gesture.setTranslation(.zero, in: gesture.view!)
+                yaw += Float(t.x) * panFactor
+                pitch += Float(t.y) * panFactor
+                pitch = min(max(pitch, -1.1), 1.1)
+                applyOrientation()
+            case .ended:
+                let v = gesture.velocity(in: gesture.view!)
+                velocityYaw = Float(v.x) * panFactor
+                velocityPitch = Float(v.y) * panFactor
+                inertiaActive = true           // soltou = desliza e assenta
+            default:
+                break
+            }
+        }
+
+        @objc func handlePinch(_ gesture: UIPinchGestureRecognizer) {
+            guard gesture.state == .changed else { return }
+            targetDistance = min(max(targetDistance / Float(gesture.scale), minDistance), maxDistance)
+            gesture.scale = 1
+        }
+
         @objc func handleTap(_ gesture: UITapGestureRecognizer) {
-            guard let scnView = gesture.view as? SCNView else { return }
+            guard let scnView = scnView else { return }
             let point = gesture.location(in: scnView)
 
-            // FIX: por padrão o hitTest retorna só o acerto mais próximo
-            // (sempre a nuvem, que está na frente). .all devolve tudo ao
-            // longo do raio; o filtro abaixo pega o marcador.
-            let results = scnView.hitTest(
-                point,
-                options: [SCNHitTestOption.searchMode: SCNHitTestSearchMode.all.rawValue]
-            )
+            // Só os proxies (máscara 2) participam — nuvem e Terra não interferem
+            let options: [SCNHitTestOption: Any] = [
+                SCNHitTestOption.categoryBitMask: 2,
+                SCNHitTestOption.searchMode: SCNHitTestSearchMode.all.rawValue
+            ]
 
-            guard let hit = results.first(where: { $0.node.name?.hasPrefix("quake_") == true }),
+            guard let hit = scnView.hitTest(point, options: options).first,
                   let name = hit.node.name,
                   let quake = parent.earthquakes.first(where: { name == "quake_\($0.id)" })
             else { return }
