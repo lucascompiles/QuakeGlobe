@@ -9,9 +9,18 @@ import SwiftUI
 import SceneKit
 import simd
 
+// MARK: - Estado de carregamento
+
+enum LoadState: Equatable {
+    case loading
+    case loaded
+    case failed
+}
+
 struct ContentView: View {
     @State private var earthquakes: [Earthquake] = []
     @State private var selectedQuake: Earthquake?
+    @State private var loadState: LoadState = .loading
 
     var body: some View {
         GlobeView(earthquakes: earthquakes) { quake in
@@ -19,17 +28,67 @@ struct ContentView: View {
         }
         .ignoresSafeArea()
         .background(Color.black)
+        .overlay { statusOverlay }
         .task { await loadEarthquakes() }
         .sheet(item: $selectedQuake) { quake in
             QuakeDetailSheet(quake: quake)
         }
     }
 
+    // MARK: Overlay de status
+
+    @ViewBuilder
+    private var statusOverlay: some View {
+        switch loadState {
+        case .loading where earthquakes.isEmpty:
+            ProgressView("Loading earthquakes…")
+                .tint(.white)
+                .foregroundStyle(.white)
+
+        case .failed where earthquakes.isEmpty:
+            VStack(spacing: 12) {
+                Image(systemName: "wifi.exclamationmark")
+                    .font(.system(size: 40))
+                    .foregroundStyle(.orange)
+
+                Text("Unable to Load Earthquakes")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.white)
+
+                Text("Check your connection and try again.")
+                    .font(.subheadline)
+                    .foregroundStyle(.gray)
+                    .multilineTextAlignment(.center)
+
+                Button {
+                    Task { await loadEarthquakes() }
+                } label: {
+                    Label("Try Again", systemImage: "arrow.clockwise")
+                        .font(.subheadline.weight(.semibold))
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.orange)
+                .padding(.top, 4)
+            }
+            .padding(24)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
+            .padding(32)
+
+        default:
+            EmptyView()
+        }
+    }
+
     private func loadEarthquakes() async {
+        if earthquakes.isEmpty {
+            loadState = .loading
+        }
         do {
             earthquakes = try await EarthquakeService().fetchRecent()
+            loadState = .loaded
             print("🌍 \(earthquakes.count) terremotos carregados")
         } catch {
+            loadState = .failed
             print("❌ Falha ao buscar terremotos: \(error)")
         }
     }
