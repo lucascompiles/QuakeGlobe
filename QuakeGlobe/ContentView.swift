@@ -21,6 +21,11 @@ struct ContentView: View {
     @State private var earthquakes: [Earthquake] = []
     @State private var selectedQuake: Earthquake?
     @State private var loadState: LoadState = .loading
+    @State private var lastLoad: Date?
+    @Environment(\.scenePhase) private var scenePhase
+
+    /// Intervalo do auto-refresh. 300s em produção; baixe pra testar.
+    private let refreshInterval: TimeInterval = 300
 
     var body: some View {
         GlobeView(earthquakes: earthquakes) { quake in
@@ -29,7 +34,17 @@ struct ContentView: View {
         .ignoresSafeArea()
         .background(Color.black)
         .overlay { statusOverlay }
-        .task { await loadEarthquakes() }
+        .task {
+            await loadEarthquakes()
+            await autoRefreshLoop()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // Reabriu o app depois de muito tempo? Atualiza na hora.
+            guard phase == .active, let lastLoad else { return }
+            if Date().timeIntervalSince(lastLoad) > refreshInterval {
+                Task { await loadEarthquakes() }
+            }
+        }
         .sheet(item: $selectedQuake) { quake in
             QuakeDetailSheet(quake: quake)
         }
@@ -79,6 +94,16 @@ struct ContentView: View {
         }
     }
 
+    // MARK: Carga + refresh
+
+    private func autoRefreshLoop() async {
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(refreshInterval))
+            if Task.isCancelled { break }
+            await loadEarthquakes()
+        }
+    }
+
     private func loadEarthquakes() async {
         if earthquakes.isEmpty {
             loadState = .loading
@@ -86,9 +111,11 @@ struct ContentView: View {
         do {
             earthquakes = try await EarthquakeService().fetchRecent()
             loadState = .loaded
+            lastLoad = Date()
             print("🌍 \(earthquakes.count) terremotos carregados")
         } catch {
-            loadState = .failed
+            // Com dados na tela, falha de refresh é silenciosa (dado > erro)
+            if earthquakes.isEmpty { loadState = .failed }
             print("❌ Falha ao buscar terremotos: \(error)")
         }
     }
