@@ -7,6 +7,7 @@
 
 import SwiftUI
 import SceneKit
+import SwiftData
 import simd
 
 // MARK: - Estado de carregamento
@@ -22,18 +23,25 @@ struct ContentView: View {
     @State private var selectedQuake: Earthquake?
     @State private var loadState: LoadState = .loading
     @State private var lastLoad: Date?
+    @State private var showFavorites = false
+    @Query private var favorites: [FavoriteQuake]
     @Environment(\.scenePhase) private var scenePhase
 
     /// Intervalo do auto-refresh. 300s em produção; baixe pra testar.
     private let refreshInterval: TimeInterval = 300
 
     var body: some View {
-        GlobeView(earthquakes: earthquakes) { quake in
-            selectedQuake = quake
+        ZStack(alignment: .topTrailing) {
+            GlobeView(earthquakes: earthquakes) { quake in
+                selectedQuake = quake
+            }
+            .ignoresSafeArea()
+            .background(Color.black)
+            .overlay { statusOverlay }
+
+            favoritesButton
+                .padding(.trailing, 16)
         }
-        .ignoresSafeArea()
-        .background(Color.black)
-        .overlay { statusOverlay }
         .task {
             await loadEarthquakes()
             await autoRefreshLoop()
@@ -47,6 +55,35 @@ struct ContentView: View {
         }
         .sheet(item: $selectedQuake) { quake in
             QuakeDetailSheet(quake: quake)
+        }
+        .sheet(isPresented: $showFavorites) {
+            FavoritesListView()
+                .presentationBackground(.black)
+                .presentationDetents([.medium, .large])
+        }
+    }
+
+    // MARK: Botão de favoritos
+
+    private var favoritesButton: some View {
+        Button {
+            showFavorites = true
+        } label: {
+            Image(systemName: favorites.isEmpty ? "heart" : "heart.fill")
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(favorites.isEmpty ? .white : .red)
+                .padding(12)
+                .background(.ultraThinMaterial, in: Circle())
+                .overlay(alignment: .topTrailing) {
+                    if !favorites.isEmpty {
+                        Text("\(favorites.count)")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.white)
+                            .padding(5)
+                            .background(.red, in: Circle())
+                            .offset(x: 6, y: -6)
+                    }
+                }
         }
     }
 
@@ -426,12 +463,21 @@ extension Earthquake.Severity {
     }
 }
 
-// MARK: - Card de detalhe
+// MARK: - Card de detalhe (com favorito)
 
 struct QuakeDetailSheet: View {
     let quake: Earthquake
+    @Environment(\.modelContext) private var context
+    @Query private var matches: [FavoriteQuake]
 
-    /// Magnitude é notação científica (padrão USGS): ponto fixo, sem locale.
+    init(quake: Earthquake) {
+        self.quake = quake
+        let id = quake.id
+        _matches = Query(filter: #Predicate<FavoriteQuake> { $0.quakeID == id })
+    }
+
+    private var isFavorite: Bool { !matches.isEmpty }
+
     private var magnitudeText: String {
         String(format: "%.1f", quake.magnitude)
     }
@@ -492,12 +538,32 @@ struct QuakeDetailSheet: View {
             Spacer()
         }
         .frame(maxWidth: .infinity)
+        .overlay(alignment: .topTrailing) {
+            Button {
+                toggleFavorite()
+            } label: {
+                Image(systemName: isFavorite ? "heart.fill" : "heart")
+                    .font(.title2)
+                    .foregroundStyle(isFavorite ? .red : .gray)
+                    .padding(20)
+            }
+        }
         .presentationBackground(.black)
         .presentationDetents([.medium])
         .presentationDragIndicator(.visible)
+    }
+
+    private func toggleFavorite() {
+        if let existing = matches.first {
+            context.delete(existing)
+        } else {
+            context.insert(FavoriteQuake(from: quake))
+        }
+        try? context.save()
     }
 }
 
 #Preview {
     ContentView()
+        .modelContainer(for: FavoriteQuake.self, inMemory: true)
 }

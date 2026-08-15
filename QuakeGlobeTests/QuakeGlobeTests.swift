@@ -66,3 +66,22 @@ struct SeverityTests {
         #expect(makeQuake(mag: nil).severity == .minor)
     }
 }
+
+struct FavoriteQuakeTests {
+
+    @Test func snapshotRoundTrip() {
+        let quake = Earthquake(
+            id: "t1",
+            geometry: .init(coordinates: [-118.24, 34.05, 12.5]),
+            properties: .init(mag: 4.7, place: "Greater Los Angeles", time: 1700000000000)
+        )
+        let fav = FavoriteQuake(from: quake)
+
+        #expect(fav.earthquake.id == "t1")
+        #expect(fav.earthquake.magnitude == 4.7)
+        #expect(fav.earthquake.latitude == 34.05)
+        #expect(fav.earthquake.longitude == -118.24)
+        #expect(fav.earthquake.depthKm == 12.5)
+        #expect(fav.earthquake.date != nil)
+    }
+}
