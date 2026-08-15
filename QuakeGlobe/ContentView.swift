@@ -18,6 +18,17 @@ enum LoadState: Equatable {
     case failed
 }
 
+// MARK: - Elemento de VoiceOver ativável
+
+final class QuakeAccessibilityElement: UIAccessibilityElement {
+    var onActivate: (() -> Void)?
+
+    override func accessibilityActivate() -> Bool {
+        onActivate?()
+        return true
+    }
+}
+
 struct ContentView: View {
     @State private var earthquakes: [Earthquake] = []
     @State private var selectedQuake: Earthquake?
@@ -85,6 +96,8 @@ struct ContentView: View {
                     }
                 }
         }
+        .accessibilityLabel("Favorites")
+        .accessibilityHint("Shows your saved earthquakes.")
     }
 
     // MARK: Overlay de status
@@ -267,6 +280,7 @@ struct GlobeView: UIViewRepresentable {
         guard let earthNode = uiView.scene?.rootNode
             .childNode(withName: "earth", recursively: true) else { return }
         plotMarkers(on: earthNode)
+        rebuildAccessibility(on: uiView)
     }
 
     // MARK: Plot (marcador visível + proxy de toque invisível)
@@ -303,6 +317,46 @@ struct GlobeView: UIViewRepresentable {
             proxyNode.position = position
             earthNode.addChildNode(proxyNode)
         }
+    }
+
+    // MARK: VoiceOver (lista de áudio com ordem estável)
+
+    private func rebuildAccessibility(on scnView: SCNView) {
+        // VoiceOver ordena a navegação PELO FRAME. Frames idênticos = ordem
+        // instável (repete/trava). Fatias virtuais distintas = navegação
+        // estável, mais fortes primeiro, imune à rotação do globo.
+        let sorted = earthquakes.sorted { $0.magnitude > $1.magnitude }
+        let sliceHeight = scnView.bounds.height / CGFloat(max(sorted.count, 1))
+
+        let elements: [UIAccessibilityElement] = sorted.enumerated().map { index, quake in
+            let element = QuakeAccessibilityElement(accessibilityContainer: scnView)
+            element.accessibilityLabel = accessibilityLabel(for: quake)
+            element.accessibilityHint = "Double tap to open details."
+            element.accessibilityTraits = .button
+            element.accessibilityFrameInContainerSpace = CGRect(
+                x: 0,
+                y: CGFloat(index) * sliceHeight,
+                width: scnView.bounds.width,
+                height: sliceHeight
+            )
+            element.onActivate = { onSelect(quake) }
+            return element
+        }
+        scnView.accessibilityElements = elements
+    }
+
+    private func accessibilityLabel(for quake: Earthquake) -> String {
+        var parts = [
+            "Magnitude \(String(format: "%.1f", quake.magnitude))",
+            quake.severity.label
+        ]
+        if let place = quake.properties.place {
+            parts.append(place)
+        }
+        if let date = quake.date {
+            parts.append(date.formatted(.relative(presentation: .named)))
+        }
+        return parts.joined(separator: ", ")
     }
 
     private func markerRadius(for magnitude: Double) -> CGFloat {
@@ -547,6 +601,7 @@ struct QuakeDetailSheet: View {
                     .foregroundStyle(isFavorite ? .red : .gray)
                     .padding(20)
             }
+            .accessibilityLabel(isFavorite ? "Remove from favorites" : "Add to favorites")
         }
         .presentationBackground(.black)
         .presentationDetents([.medium])
