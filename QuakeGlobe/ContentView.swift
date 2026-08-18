@@ -71,6 +71,8 @@ struct ContentView: View {
             FavoritesListView()
                 .presentationBackground(.black)
                 .presentationDetents([.medium, .large])
+                // Arrasto rola a lista primeiro; o sheet só expande pelo indicador.
+                .presentationContentInteraction(.scrolls)
         }
     }
 
@@ -481,7 +483,7 @@ struct GlobeView: UIViewRepresentable {
             guard let scnView = scnView else { return }
             let point = gesture.location(in: scnView)
 
-            // Só os proxies (máscara 2) participam — nuvem e Terra não interferem
+            // Só os proxies (máscara 2) participam: nuvem e Terra não interferem.
             let options: [SCNHitTestOption: Any] = [
                 SCNHitTestOption.categoryBitMask: 2,
                 SCNHitTestOption.searchMode: SCNHitTestSearchMode.all.rawValue
