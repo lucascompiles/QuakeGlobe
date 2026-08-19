@@ -223,12 +223,12 @@ struct GlobeView: UIViewRepresentable {
         globeNode.eulerAngles.y = Float(75.0 * .pi / 180)
         scene.rootNode.addChildNode(globeNode)
 
-        // Terra
+        // Terra (nasce preta; textura preparada entra em seguida)
         let earth = SCNSphere(radius: 1.0)
         earth.segmentCount = 96
 
         let material = SCNMaterial()
-        material.diffuse.contents = UIImage(named: "earth_texture")
+        material.diffuse.contents = UIColor.black
         material.diffuse.mipFilter = .linear
         earth.materials = [material]
 
@@ -236,12 +236,12 @@ struct GlobeView: UIViewRepresentable {
         earthNode.name = "earth"
         globeNode.addChildNode(earthNode)
 
-        // Nuvens
+        // Nuvens (preto no blend aditivo = invisível até preparar)
         let clouds = SCNSphere(radius: 1.06)
         clouds.segmentCount = 96
 
         let cloudMaterial = SCNMaterial()
-        cloudMaterial.diffuse.contents = UIImage(named: "earth_clouds")
+        cloudMaterial.diffuse.contents = UIColor.black
         cloudMaterial.diffuse.intensity = 0.6
         cloudMaterial.lightingModel = .constant
         cloudMaterial.blendMode = .add
@@ -256,6 +256,15 @@ struct GlobeView: UIViewRepresentable {
         cloudsNode.runAction(.repeatForever(drift))
 
         scnView.scene = scene
+
+        // Decode das texturas 2K FORA da main thread: mata o hang de 0.28s.
+        Task {
+            async let earthImage: UIImage? = Self.preparedImage("earth_texture")
+            async let cloudsImage: UIImage? = Self.preparedImage("earth_clouds")
+            let (preparedEarth, preparedClouds) = await (earthImage, cloudsImage)
+            if let preparedEarth { material.diffuse.contents = preparedEarth }
+            if let preparedClouds { cloudMaterial.diffuse.contents = preparedClouds }
+        }
 
         // Referências + display link (inércia e zoom suave)
         context.coordinator.scnView = scnView
@@ -275,6 +284,11 @@ struct GlobeView: UIViewRepresentable {
         scnView.addGestureRecognizer(tap)
 
         return scnView
+    }
+
+    /// Decode assíncrono: a imagem chega pronta pra GPU, sem travar a main.
+    private static func preparedImage(_ name: String) async -> UIImage? {
+        await UIImage(named: name)?.byPreparingForDisplay()
     }
 
     func updateUIView(_ uiView: SCNView, context: Context) {
