@@ -104,15 +104,26 @@ struct ContentView: View {
                 flyRequest: flyRequest,
                 zoomRequest: zoomRequest,
                 onSelect: { quake in
-                    if selectedQuake != nil {
-                        // REGRA: marcador com card aberto = fecha + 50%
-                        closeCard()
+                    if let current = selectedQuake {
+                        if current.id == quake.id {
+                            // REGRA: mesmo ponto com card aberto = só fecha + 50%
+                            closeCard()
+                        } else {
+                            // REGRA: outro ponto com card aberto =
+                            // fecha o atual e voa DIRETO pro novo, card no pouso.
+                            suppressDismissZoom = true
+                            selectedQuake = nil
+                            flyRequest = FlyRequest(quake: quake, arc: false)
+                        }
                     } else {
                         // REGRA: marcador direto = aproxima sem recuo
                         flyRequest = FlyRequest(quake: quake, arc: false)
                     }
                 },
                 onFlyComplete: { quake in
+                    // REGRA: card novo abrindo desarma qualquer supressão
+                    // leftover (o dismiss programático não consome a flag).
+                    suppressDismissZoom = false
                     selectedQuake = quake      // card abre no pouso
                 },
                 onEmptyTap: {
@@ -171,8 +182,8 @@ struct ContentView: View {
         zoomRequest = ZoomRequest(distance: midZoomDistance)
     }
 
-    /// Binding que detecta o fechamento do sheet (swipe). O coração
-    /// suprime o zoom: ele espera o próximo favorito pra recuar no voo.
+    /// Binding que detecta o fechamento do sheet (swipe). O coração e a
+    /// troca de ponto suprimem o zoom: cada um tem seu próprio voo.
     private var selectedQuakeBinding: Binding<Earthquake?> {
         Binding(
             get: { selectedQuake },
