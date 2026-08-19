@@ -49,6 +49,7 @@ struct ContentView: View {
     @State private var loadState: LoadState = .loading
     @State private var lastLoad: Date?
     @State private var showFavorites = false
+    @AppStorage("hapticsEnabled") private var hapticsEnabled = true
     @Query private var favorites: [FavoriteQuake]
     @Environment(\.scenePhase) private var scenePhase
 
@@ -64,8 +65,11 @@ struct ContentView: View {
             .background(Color.black)
             .overlay { statusOverlay }
 
-            favoritesButton
-                .padding(.trailing, 16)
+            VStack(alignment: .trailing, spacing: 12) {
+                hapticsButton
+                favoritesButton
+            }
+            .padding(.trailing, 16)
         }
         .task {
             await loadEarthquakes()
@@ -80,6 +84,9 @@ struct ContentView: View {
         }
         .sheet(item: $selectedQuake) { quake in
             QuakeDetailSheet(quake: quake)
+                .onAppear {
+                    HapticEngine.shared.play(magnitude: quake.magnitude, enabled: hapticsEnabled)
+                }
         }
         .sheet(isPresented: $showFavorites) {
             FavoritesListView()
@@ -88,6 +95,22 @@ struct ContentView: View {
                 // Arrasto rola a lista primeiro; o sheet só expande pelo indicador.
                 .presentationContentInteraction(.scrolls)
         }
+    }
+
+    // MARK: Botão de haptics
+
+    private var hapticsButton: some View {
+        Button {
+            hapticsEnabled.toggle()
+        } label: {
+            Image(systemName: hapticsEnabled ? "waveform" : "waveform.slash")
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.white)
+                .padding(12)
+                .background(.ultraThinMaterial, in: Circle())
+        }
+        .accessibilityLabel(hapticsEnabled ? "Haptics enabled" : "Haptics disabled")
+        .accessibilityHint("Toggles vibration feedback.")
     }
 
     // MARK: Botão de favoritos
@@ -171,13 +194,22 @@ struct ContentView: View {
     }
 
     private func loadEarthquakes() async {
+        let previousCount = earthquakes.count
+        
         if earthquakes.isEmpty {
             loadState = .loading
         }
         do {
-            earthquakes = try await EarthquakeService().fetchRecent()
+            let newEarthquakes = try await EarthquakeService().fetchRecent()
+            earthquakes = newEarthquakes
             loadState = .loaded
             lastLoad = Date()
+            
+            // Haptic no terremoto mais forte do refresh (se houver novos)
+            if newEarthquakes.count > previousCount, let strongest = newEarthquakes.max(by: { $0.magnitude < $1.magnitude }) {
+                HapticEngine.shared.play(magnitude: strongest.magnitude, enabled: hapticsEnabled)
+            }
+            
             print("🌍 \(earthquakes.count) terremotos carregados")
         } catch {
             // Com dados na tela, falha de refresh é silenciosa (dado > erro)
