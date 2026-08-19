@@ -10,8 +10,11 @@ import SwiftData
 
 struct FavoritesListView: View {
     @Environment(\.modelContext) private var context
+    @Environment(\.dismiss) private var dismiss
     @Query(sort: \FavoriteQuake.time, order: .reverse) private var favorites: [FavoriteQuake]
-    @State private var selectedQuake: Earthquake?
+
+    /// Linha tocada = pedido de fly-to; o ContentView cuida do resto.
+    let onFly: (Earthquake) -> Void
 
     var body: some View {
         NavigationStack {
@@ -26,7 +29,8 @@ struct FavoritesListView: View {
                     List {
                         ForEach(favorites) { fav in
                             Button {
-                                selectedQuake = fav.earthquake
+                                onFly(fav.earthquake)
+                                dismiss()
                             } label: {
                                 row(for: fav)
                             }
@@ -44,9 +48,6 @@ struct FavoritesListView: View {
             .toolbarColorScheme(.dark, for: .navigationBar)
         }
         .preferredColorScheme(.dark)
-        .sheet(item: $selectedQuake) { quake in
-            QuakeDetailSheet(quake: quake)
-        }
     }
 
     private func row(for fav: FavoriteQuake) -> some View {
@@ -69,6 +70,12 @@ struct FavoritesListView: View {
                         .foregroundStyle(.gray)
                 }
             }
+
+            Spacer()
+
+            Image(systemName: "location.fill")
+                .font(.caption)
+                .foregroundStyle(.gray)
         }
         .padding(.vertical, 4)
     }

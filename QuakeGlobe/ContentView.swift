@@ -18,6 +18,32 @@ enum LoadState: Equatable {
     case failed
 }
 
+// MARK: - Pedido de voo (fly-to)
+
+struct FlyRequest {
+    let id = UUID()          // token: cada pedido voa uma única vez
+    let quake: Earthquake
+    let arc: Bool            // true = vai-e-vem (favoritos); false = aproxima direto (marcador)
+}
+
+// MARK: - Pedido de zoom externo (fechar card = 50%)
+
+struct ZoomRequest {
+    let id = UUID()
+    let distance: Float
+}
+
+// MARK: - SCNView que sente o dedo encostar (cancela voo no touch-down)
+
+final class GlobeSCNView: SCNView {
+    var onTouchDown: (() -> Void)?
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        onTouchDown?()
+        super.touchesBegan(touches, with: event)
+    }
+}
+
 // MARK: - Elemento de VoiceOver ativável
 
 final class QuakeAccessibilityElement: UIAccessibilityElement {
@@ -49,6 +75,9 @@ struct ContentView: View {
     @State private var loadState: LoadState = .loading
     @State private var lastLoad: Date?
     @State private var showFavorites = false
+    @State private var flyRequest: FlyRequest?
+    @State private var zoomRequest: ZoomRequest?
+    @State private var suppressDismissZoom = false
     @AppStorage("hapticsEnabled") private var hapticsEnabled = true
     @Query private var favorites: [FavoriteQuake]
     @Environment(\.scenePhase) private var scenePhase
@@ -56,15 +85,40 @@ struct ContentView: View {
     /// Intervalo do auto-refresh. 300s em produção; baixe pra testar.
     private let refreshInterval: TimeInterval = 300
 
+    /// Régua de zoom: 0% = 4.0 (globo mínimo), 50% = 2.85, 100% = 1.7 (pouso).
+    /// REGRA: 2.85 é o recuo de dismiss; 4.0 é SOMENTE cancel de voo.
+    private let midZoomDistance: Float = 2.85
+
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            GlobeView(earthquakes: earthquakes) { quake in
-                selectedQuake = quake
-            }
+            GlobeView(
+                earthquakes: earthquakes,
+                flyRequest: flyRequest,
+                zoomRequest: zoomRequest,
+                onSelect: { quake in
+                    if selectedQuake != nil {
+                        // REGRA: marcador com card aberto = fecha + 50%
+                        closeCard()
+                    } else {
+                        // REGRA: marcador direto = aproxima sem recuo
+                        flyRequest = FlyRequest(quake: quake, arc: false)
+                    }
+                },
+                onFlyComplete: { quake in
+                    selectedQuake = quake      // card abre no pouso
+                },
+                onEmptyTap: {
+                    // REGRA: fora do card = fecha + 50%
+                    if selectedQuake != nil {
+                        closeCard()
+                    }
+                }
+            )
             .ignoresSafeArea()
             .background(Color.black)
             .overlay { statusOverlay }
 
+            // Botões sempre vivos e visíveis
             VStack(alignment: .trailing, spacing: 12) {
                 hapticsButton
                 favoritesButton
@@ -82,19 +136,50 @@ struct ContentView: View {
                 Task { await loadEarthquakes() }
             }
         }
-        .sheet(item: $selectedQuake) { quake in
+        .sheet(item: selectedQuakeBinding) { quake in
             QuakeDetailSheet(quake: quake)
                 .onAppear {
                     HapticEngine.shared.play(magnitude: quake.magnitude, enabled: hapticsEnabled)
                 }
+                // Fundo interativo: o globo e os botões respondem com o card aberto
+                .presentationBackgroundInteraction(.enabled(upThrough: .medium))
         }
         .sheet(isPresented: $showFavorites) {
-            FavoritesListView()
-                .presentationBackground(.black)
-                .presentationDetents([.medium, .large])
-                // Arrasto rola a lista primeiro; o sheet só expande pelo indicador.
-                .presentationContentInteraction(.scrolls)
+            FavoritesListView { quake in
+                showFavorites = false
+                flyRequest = FlyRequest(quake: quake, arc: true)   // REGRA: favoritos = vai-e-vem
+            }
+            .presentationBackground(.black)
+            .presentationDetents([.medium, .large])
+            // Arrasto rola a lista primeiro; o sheet só expande pelo indicador.
+            .presentationContentInteraction(.scrolls)
         }
+    }
+
+    /// REGRA: fecha o card E aplica a recuadinha de 50%.
+    /// Nunca usa 4.0: o globo mínimo é exclusividade do cancel de voo.
+    private func closeCard() {
+        selectedQuake = nil
+        zoomRequest = ZoomRequest(distance: midZoomDistance)
+    }
+
+    /// Binding que detecta o fechamento do sheet (swipe). O coração
+    /// suprime o zoom: ele espera o próximo favorito pra recuar no voo.
+    private var selectedQuakeBinding: Binding<Earthquake?> {
+        Binding(
+            get: { selectedQuake },
+            set: { newValue in
+                let wasOpen = selectedQuake != nil
+                selectedQuake = newValue
+                if wasOpen && newValue == nil {
+                    if suppressDismissZoom {
+                        suppressDismissZoom = false
+                    } else {
+                        zoomRequest = ZoomRequest(distance: midZoomDistance)
+                    }
+                }
+            }
+        )
     }
 
     // MARK: Botão de haptics
@@ -117,7 +202,17 @@ struct ContentView: View {
 
     private var favoritesButton: some View {
         Button {
-            showFavorites = true
+            if selectedQuake != nil {
+                // REGRA: coração com card aberto = fecha SEM recuar + favoritos
+                suppressDismissZoom = true
+                selectedQuake = nil
+                Task {
+                    try? await Task.sleep(for: .seconds(0.35))
+                    showFavorites = true
+                }
+            } else {
+                showFavorites = true
+            }
         } label: {
             Image(systemName: favorites.isEmpty ? "heart" : "heart.fill")
                 .font(.title3.weight(.semibold))
@@ -195,7 +290,7 @@ struct ContentView: View {
 
     private func loadEarthquakes() async {
         let previousCount = earthquakes.count
-        
+
         if earthquakes.isEmpty {
             loadState = .loading
         }
@@ -204,12 +299,12 @@ struct ContentView: View {
             earthquakes = newEarthquakes
             loadState = .loaded
             lastLoad = Date()
-            
+
             // Haptic no terremoto mais forte do refresh (se houver novos)
             if newEarthquakes.count > previousCount, let strongest = newEarthquakes.max(by: { $0.magnitude < $1.magnitude }) {
                 HapticEngine.shared.play(magnitude: strongest.magnitude, enabled: hapticsEnabled)
             }
-            
+
             print("🌍 \(earthquakes.count) terremotos carregados")
         } catch {
             // Com dados na tela, falha de refresh é silenciosa (dado > erro)
@@ -223,7 +318,11 @@ struct ContentView: View {
 
 struct GlobeView: UIViewRepresentable {
     let earthquakes: [Earthquake]
+    let flyRequest: FlyRequest?
+    let zoomRequest: ZoomRequest?
     let onSelect: (Earthquake) -> Void
+    let onFlyComplete: (Earthquake) -> Void
+    let onEmptyTap: () -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -234,7 +333,7 @@ struct GlobeView: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> SCNView {
-        let scnView = SCNView()
+        let scnView = GlobeSCNView()
         scnView.backgroundColor = .black
         scnView.antialiasingMode = .multisampling4X
 
@@ -332,12 +431,16 @@ struct GlobeView: UIViewRepresentable {
             scnView.prepare([scene]) { _ in }
         }
 
-        // Referências + display link (inércia e zoom suave)
+        // Referências + display link (inércia, zoom suave e fly-to)
         context.coordinator.scnView = scnView
         context.coordinator.globeNode = globeNode
         context.coordinator.cameraNode = cameraNode
         context.coordinator.starNode = starNode
         context.coordinator.startDisplayLink()
+
+        // REGRA: touch-down durante VOO = cancela e recua ao globo mínimo.
+        // Fora de voo, este handler não faz nada.
+        scnView.onTouchDown = { context.coordinator.cancelFly() }
 
         // Gestos
         let pan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handlePan(_:)))
@@ -447,6 +550,21 @@ struct GlobeView: UIViewRepresentable {
             .childNode(withName: "earth", recursively: true) else { return }
         plotMarkers(on: earthNode)
         rebuildAccessibility(on: uiView)
+
+        // Pedido novo de fly-to? Decola.
+        if let request = flyRequest, request.id != context.coordinator.lastFlyID {
+            context.coordinator.lastFlyID = request.id
+            let quake = request.quake
+            context.coordinator.fly(to: quake, withArc: request.arc) {
+                self.onFlyComplete(quake)
+            }
+        }
+
+        // Pedido novo de zoom externo? Aplica com animação suave.
+        if let request = zoomRequest, request.id != context.coordinator.lastZoomID {
+            context.coordinator.lastZoomID = request.id
+            context.coordinator.setTargetDistance(request.distance)
+        }
     }
 
     // MARK: Plot (marcador visível + proxy de toque invisível)
@@ -562,6 +680,21 @@ struct GlobeView: UIViewRepresentable {
         private let minDistance: Float = 1.25
         private let maxDistance: Float = 4.0
 
+        // Fly-to
+        var lastFlyID: UUID?
+        var lastZoomID: UUID?
+        private var flying = false
+        private var flyWithArc = false
+        private var flyElapsed: Float = 0
+        private let flyDuration: Float = 2.2    // cinematográfico e cancelável
+        private var flyFrom: (yaw: Float, pitch: Float, dist: Float) = (0, 0, 3)
+        private var flyTo: (yaw: Float, pitch: Float, dist: Float) = (0, 0, 1.7)
+        private var flyCompletion: (() -> Void)?
+        private var swallowNextTap = false
+
+        // Recuo animado (cancel de voo, dismiss de card): smoothstep, assenta suave
+        private var zoomAnim: (from: Float, to: Float, elapsed: Float, duration: Float)?
+
         init(_ parent: GlobeView) {
             self.parent = parent
         }
@@ -583,6 +716,15 @@ struct GlobeView: UIViewRepresentable {
             0.009 * pow(currentDistance / maxDistance, 2.0)
         }
 
+        func setTargetDistance(_ distance: Float) {
+            animateZoom(to: distance, duration: 0.8)
+        }
+
+        private func animateZoom(to target: Float, duration: Float) {
+            let clamped = min(max(target, minDistance), maxDistance)
+            zoomAnim = (currentDistance, clamped, 0, duration)
+        }
+
         private func applyOrientation() {
             globeNode?.simdOrientation =
                 simd_quatf(angle: pitch, axis: SIMD3<Float>(1, 0, 0)) *
@@ -592,11 +734,75 @@ struct GlobeView: UIViewRepresentable {
             starNode?.eulerAngles = SCNVector3(pitch * 0.1, yaw * 0.1, 0)
         }
 
+        /// Fly-to: centrar longitude = yaw oposto; latitude com respiro
+        /// calibrado (0.22 rad no pouso = ~12% da tela acima do centro).
+        /// arc = true (favoritos): vai-e-vem com recuo no meio.
+        /// arc = false (marcador): aproxima direto de onde a câmera estiver.
+        func fly(to quake: Earthquake, withArc: Bool, completion: @escaping () -> Void) {
+            inertiaActive = false
+            flying = true
+            flyWithArc = withArc
+            flyElapsed = 0
+            swallowNextTap = false
+            zoomAnim = nil
+            flyFrom = (yaw, pitch, currentDistance)
+
+            let targetYaw = -Float(quake.longitude * .pi / 180)
+            var delta = targetYaw - yaw
+            while delta > .pi { delta -= 2 * .pi }
+            while delta < -.pi { delta += 2 * .pi }
+
+            let latRad = Float(quake.latitude * .pi / 180)
+            let targetPitch = min(max(latRad - 0.22, -1.1), 1.1)
+            flyTo = (yaw + delta, targetPitch, 1.7)
+            flyCompletion = completion
+        }
+
+        /// REGRA: ÚNICO caminho pro globo mínimo (4.0).
+        /// Só executa se estiver voando; touch-down fora de voo é no-op.
+        func cancelFly() {
+            guard flying else { return }
+            flying = false
+            flyCompletion = nil
+            swallowNextTap = true
+            animateZoom(to: maxDistance, duration: 1.0)
+        }
+
         @objc private func tick(_ link: CADisplayLink) {
             let dt = Float(link.targetTimestamp - link.timestamp)
 
-            // Inércia com decay exponencial
-            if inertiaActive {
+            // Fly-to: interpolação smoothstep (acelera, cruza, assenta)
+            if flying {
+                flyElapsed += dt
+                let t = min(flyElapsed / flyDuration, 1)
+                let e = t * t * (3 - 2 * t)
+
+                yaw = flyFrom.yaw + (flyTo.yaw - flyFrom.yaw) * e
+                pitch = flyFrom.pitch + (flyTo.pitch - flyFrom.pitch) * e
+
+                if flyWithArc {
+                    // Vai-e-vem: Bezier que recua até o meio da faixa no meio
+                    // do voo e reaproxima até o pouso em 1.7.
+                    let midPull = (minDistance + maxDistance) / 2
+                    let c = min((4 * midPull - flyFrom.dist - flyTo.dist) / 2, maxDistance)
+                    let u = 1 - t
+                    currentDistance = u * u * flyFrom.dist + 2 * u * t * c + t * t * flyTo.dist
+                } else {
+                    // Aproximação direta: chega de onde estiver, como pouso de voo
+                    currentDistance = flyFrom.dist + (flyTo.dist - flyFrom.dist) * e
+                }
+
+                cameraNode?.position = SCNVector3(0, 0, currentDistance)
+                applyOrientation()
+
+                if t >= 1 {
+                    flying = false
+                    targetDistance = currentDistance
+                    flyCompletion?()
+                    flyCompletion = nil
+                }
+            } else if inertiaActive {
+                // Inércia com decay exponencial
                 yaw += velocityYaw * dt
                 pitch += velocityPitch * dt
                 pitch = min(max(pitch, -1.1), 1.1)
@@ -611,10 +817,25 @@ struct GlobeView: UIViewRepresentable {
                 applyOrientation()
             }
 
-            // Zoom interpolado (suave, sem pulo)
-            if abs(targetDistance - currentDistance) > 0.001 {
-                currentDistance += (targetDistance - currentDistance) * min(1, dt * 12)
-                cameraNode?.position = SCNVector3(0, 0, currentDistance)
+            // Zoom: recuo animado (smoothstep) tem prioridade;
+            // senão, lerp do pinch.
+            if !flying {
+                if var za = zoomAnim {
+                    za.elapsed += dt
+                    let t = min(za.elapsed / za.duration, 1)
+                    let e = t * t * (3 - 2 * t)
+                    currentDistance = za.from + (za.to - za.from) * e
+                    cameraNode?.position = SCNVector3(0, 0, currentDistance)
+                    if t >= 1 {
+                        zoomAnim = nil
+                        targetDistance = za.to
+                    } else {
+                        zoomAnim = za
+                    }
+                } else if abs(targetDistance - currentDistance) > 0.001 {
+                    currentDistance += (targetDistance - currentDistance) * min(1, dt * 12)
+                    cameraNode?.position = SCNVector3(0, 0, currentDistance)
+                }
             }
         }
 
@@ -623,7 +844,10 @@ struct GlobeView: UIViewRepresentable {
 
             switch gesture.state {
             case .began:
-                inertiaActive = false          // dedo encostou = inércia morre
+                // Arrasto durante voo também cancela (único caso que vai a 4.0)
+                cancelFly()
+                swallowNextTap = false
+                inertiaActive = false
             case .changed:
                 let t = gesture.translation(in: gesture.view!)
                 gesture.setTranslation(.zero, in: gesture.view!)
@@ -648,6 +872,18 @@ struct GlobeView: UIViewRepresentable {
         }
 
         @objc func handleTap(_ gesture: UITapGestureRecognizer) {
+            // Toque que cancelou o voo não abre card
+            if swallowNextTap {
+                swallowNextTap = false
+                return
+            }
+
+            // Segurança extra: se por algum motivo ainda estiver voando
+            if flying {
+                cancelFly()
+                return
+            }
+
             guard let scnView = scnView else { return }
             let point = gesture.location(in: scnView)
 
@@ -660,7 +896,10 @@ struct GlobeView: UIViewRepresentable {
             guard let hit = scnView.hitTest(point, options: options).first,
                   let name = hit.node.name,
                   let quake = parent.earthquakes.first(where: { name == "quake_\($0.id)" })
-            else { return }
+            else {
+                parent.onEmptyTap()
+                return
+            }
 
             parent.onSelect(quake)
         }
