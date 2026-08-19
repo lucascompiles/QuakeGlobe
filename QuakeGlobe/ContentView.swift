@@ -33,6 +33,14 @@ struct ZoomRequest {
     let distance: Float
 }
 
+// MARK: - Proxy de toque com boost adaptativo
+
+struct TouchProxy {
+    let node: SCNNode
+    let base: Float          // raio normal do proxy
+    let smallness: Float     // 1 = marcador minúsculo; 0 = marcador grande
+}
+
 // MARK: - SCNView que sente o dedo encostar (cancela voo no touch-down)
 
 final class GlobeSCNView: SCNView {
@@ -548,7 +556,7 @@ struct GlobeView: UIViewRepresentable {
         context.coordinator.parent = self
         guard let earthNode = uiView.scene?.rootNode
             .childNode(withName: "earth", recursively: true) else { return }
-        plotMarkers(on: earthNode)
+        plotMarkers(on: earthNode, into: context.coordinator)
         rebuildAccessibility(on: uiView)
 
         // Pedido novo de fly-to? Decola.
@@ -567,19 +575,22 @@ struct GlobeView: UIViewRepresentable {
         }
     }
 
-    // MARK: Plot (marcador visível + proxy de toque invisível)
+    // MARK: Plot (marcador visível + proxy de toque adaptativo)
 
-    private func plotMarkers(on earthNode: SCNNode) {
+    private func plotMarkers(on earthNode: SCNNode, into coordinator: Coordinator) {
         earthNode.childNodes
             .filter { $0.name?.hasPrefix("quake_") == true }
             .forEach { $0.removeFromParentNode() }
 
+        var proxies: [TouchProxy] = []
+
         for quake in earthquakes {
             let color = quake.severity.uiColor
             let position = surfacePosition(lat: quake.latitude, lon: quake.longitude, radius: 1.01)
+            let visRadius = markerRadius(for: quake.magnitude)
 
             // Marcador visível
-            let sphere = SCNSphere(radius: markerRadius(for: quake.magnitude))
+            let sphere = SCNSphere(radius: visRadius)
             let m = SCNMaterial()
             m.diffuse.contents = color
             m.emission.contents = color
@@ -590,7 +601,8 @@ struct GlobeView: UIViewRepresentable {
             earthNode.addChildNode(vis)
 
             // Proxy de toque: invisível, ~2x maior, dedo não erra
-            let proxy = SCNSphere(radius: max(markerRadius(for: quake.magnitude) * 2.2, 0.035))
+            let proxyBase = max(visRadius * 2.2, 0.035)
+            let proxy = SCNSphere(radius: proxyBase)
             let pm = SCNMaterial()
             pm.colorBufferWriteMask = []          // não desenha nada
             pm.writesToDepthBuffer = false
@@ -600,7 +612,16 @@ struct GlobeView: UIViewRepresentable {
             proxyNode.categoryBitMask = 2          // hitTest filtra por isso
             proxyNode.position = position
             earthNode.addChildNode(proxyNode)
+
+            // Smallness: 1 pros minúsculos, 0 pra M5.5+ (esses já são fáceis)
+            let smallness = max(0, min(1, (0.03 - visRadius) / 0.02))
+            proxies.append(TouchProxy(node: proxyNode,
+                                      base: Float(proxyBase),
+                                      smallness: Float(smallness)))
         }
+
+        coordinator.touchProxies = proxies
+        coordinator.invalidateProxies()   // força a reescala no próximo frame
     }
 
     // MARK: VoiceOver (lista de áudio com ordem estável)
@@ -680,6 +701,11 @@ struct GlobeView: UIViewRepresentable {
         private let minDistance: Float = 1.25
         private let maxDistance: Float = 4.0
 
+        // Proxies de toque com boost adaptativo (pequenos + globo distante)
+        var touchProxies: [TouchProxy] = []
+        private var lastProxyZ: Float = -1
+        private let proxyMaxBoost: Float = 0.045
+
         // Fly-to
         var lastFlyID: UUID?
         var lastZoomID: UUID?
@@ -723,6 +749,24 @@ struct GlobeView: UIViewRepresentable {
         private func animateZoom(to target: Float, duration: Float) {
             let clamped = min(max(target, minDistance), maxDistance)
             zoomAnim = (currentDistance, clamped, 0, duration)
+        }
+
+        func invalidateProxies() {
+            lastProxyZ = -1
+        }
+
+        /// Boost de toque: cresce com a distância da câmera (z) e com a
+        /// pequenez do marcador (smallness). No zoom máximo, boost zero.
+        private func updateProxyScales() {
+            let z = min(max((currentDistance - minDistance) / (maxDistance - minDistance), 0), 1)
+            guard abs(z - lastProxyZ) > 0.001 else { return }
+            lastProxyZ = z
+
+            for proxy in touchProxies {
+                let boost = z * proxy.smallness * proxyMaxBoost
+                let scale = (proxy.base + boost) / proxy.base
+                proxy.node.scale = SCNVector3(scale, scale, scale)
+            }
         }
 
         private func applyOrientation() {
@@ -837,6 +881,9 @@ struct GlobeView: UIViewRepresentable {
                     cameraNode?.position = SCNVector3(0, 0, currentDistance)
                 }
             }
+
+            // Área de toque adaptativa reage ao zoom atual
+            updateProxyScales()
         }
 
         @objc func handlePan(_ gesture: UIPanGestureRecognizer) {
