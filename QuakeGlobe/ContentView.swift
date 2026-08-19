@@ -29,6 +29,20 @@ final class QuakeAccessibilityElement: UIAccessibilityElement {
     }
 }
 
+// MARK: - RNG com seed (céu determinístico, mesmo céu em todo launch)
+
+struct SeededGenerator: RandomNumberGenerator {
+    private var state: UInt64
+    init(seed: UInt64) { state = seed }
+    mutating func next() -> UInt64 {
+        state &+= 0x9E3779B97F4A7C15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xBF58476D1CE4E5B9
+        z = (z ^ (z >> 27)) &* 0x94D049BB133111EB
+        return z ^ (z >> 31)
+    }
+}
+
 struct ContentView: View {
     @State private var earthquakes: [Earthquake] = []
     @State private var selectedQuake: Earthquake?
@@ -217,6 +231,21 @@ struct GlobeView: UIViewRepresentable {
         ambientNode.light = ambient
         scene.rootNode.addChildNode(ambientNode)
 
+        // Céu estrelado procedural: esfera invertida ao fundo, parallax de 10%
+        let stars = SCNSphere(radius: 40)
+        stars.segmentCount = 48
+
+        let starMaterial = SCNMaterial()
+        starMaterial.diffuse.contents = UIColor.black
+        starMaterial.diffuse.mipFilter = .linear   // sem cintilar ao girar
+        starMaterial.lightingModel = .constant
+        starMaterial.cullMode = .front             // renderiza o lado de dentro
+        stars.materials = [starMaterial]
+
+        let starNode = SCNNode(geometry: stars)
+        starNode.name = "stars"
+        scene.rootNode.addChildNode(starNode)
+
         // Container que gira (Terra + nuvens + marcadores)
         let globeNode = SCNNode()
         globeNode.name = "globe"
@@ -257,19 +286,25 @@ struct GlobeView: UIViewRepresentable {
 
         scnView.scene = scene
 
-        // Decode das texturas 2K FORA da main thread: mata o hang de 0.28s.
+        // Decode fora da main + céu procedural 4K + upload antecipado pra GPU.
         Task {
             async let earthImage: UIImage? = Self.preparedImage("earth_texture")
             async let cloudsImage: UIImage? = Self.preparedImage("earth_clouds")
-            let (preparedEarth, preparedClouds) = await (earthImage, cloudsImage)
+            async let starsImage: UIImage? = Self.starfieldImage()
+            let (preparedEarth, preparedClouds, preparedStars) = await (earthImage, cloudsImage, starsImage)
             if let preparedEarth { material.diffuse.contents = preparedEarth }
             if let preparedClouds { cloudMaterial.diffuse.contents = preparedClouds }
+            if let preparedStars { starMaterial.diffuse.contents = preparedStars }
+
+            // Pré-carrega texturas e pipelines Metal antes do primeiro render.
+            scnView.prepare([scene]) { _ in }
         }
 
         // Referências + display link (inércia e zoom suave)
         context.coordinator.scnView = scnView
         context.coordinator.globeNode = globeNode
         context.coordinator.cameraNode = cameraNode
+        context.coordinator.starNode = starNode
         context.coordinator.startDisplayLink()
 
         // Gestos
@@ -289,6 +324,89 @@ struct GlobeView: UIViewRepresentable {
     /// Decode assíncrono: a imagem chega pronta pra GPU, sem travar a main.
     private static func preparedImage(_ name: String) async -> UIImage? {
         await UIImage(named: name)?.byPreparingForDisplay()
+    }
+
+    /// Céu procedural 4K: estrelas REDONDAS e nítidas, glow em gradiente
+    /// radial, três camadas de profundidade, wrap horizontal sem emenda,
+    /// seed fixa. Sem asset, sem Single Scale.
+    private static func starfieldImage() async -> UIImage? {
+        let w: CGFloat = 4096
+        let h: CGFloat = 2048
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1                            // pixels reais, sem scale de tela
+
+        let image = UIGraphicsImageRenderer(size: CGSize(width: w, height: h), format: format).image { ctx in
+            let cg = ctx.cgContext
+            var rng = SeededGenerator(seed: 42)
+
+            cg.setFillColor(UIColor.black.cgColor)
+            cg.fill(CGRect(x: 0, y: 0, width: w, height: h))
+
+            // Estrela redonda: núcleo em elipse AA + halo em gradiente radial
+            func drawStar(x: CGFloat, _ y: CGFloat, radius: CGFloat, alpha: CGFloat, color: UIColor, glow: CGFloat) {
+                if glow > 0 {
+                    let colors = [
+                        color.withAlphaComponent(alpha * 0.35).cgColor,
+                        color.withAlphaComponent(0).cgColor
+                    ] as CFArray
+                    if let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
+                                                 colors: colors,
+                                                 locations: [0, 1]) {
+                        cg.drawRadialGradient(gradient,
+                                              startCenter: CGPoint(x: x, y: y), startRadius: 0,
+                                              endCenter: CGPoint(x: x, y: y), endRadius: radius * glow,
+                                              options: [])
+                    }
+                }
+                cg.setFillColor(color.withAlphaComponent(alpha).cgColor)
+                cg.fillEllipse(in: CGRect(x: x - radius, y: y - radius,
+                                          width: radius * 2, height: radius * 2))
+            }
+
+            // Wrap horizontal: desenha em x, x-w, x+w = emenda invisível
+            func drawWrapped(x: CGFloat, _ y: CGFloat, radius: CGFloat, alpha: CGFloat, color: UIColor, glow: CGFloat) {
+                for dx in [-w, 0, w] {
+                    drawStar(x: x + dx, y, radius: radius, alpha: alpha, color: color, glow: glow)
+                }
+            }
+
+            let palette: [UIColor] = [
+                .white,
+                UIColor(red: 0.75, green: 0.85, blue: 1.0, alpha: 1),   // azulada
+                UIColor(red: 1.0, green: 0.90, blue: 0.75, alpha: 1)    // quente
+            ]
+
+            // Camada 1: fundo profundo, ~1400 estrelas pequenas e nítidas
+            for _ in 0..<1400 {
+                drawWrapped(x: .random(in: 0..<w, using: &rng),
+                            .random(in: 0..<h, using: &rng),
+                            radius: .random(in: 0.7...1.6, using: &rng),
+                            alpha: .random(in: 0.15...0.7, using: &rng),
+                            color: palette.randomElement(using: &rng)!,
+                            glow: 0)
+            }
+
+            // Camada 2: ~140 estrelas médias com halo sutil
+            for _ in 0..<140 {
+                drawWrapped(x: .random(in: 0..<w, using: &rng),
+                            .random(in: 0..<h, using: &rng),
+                            radius: .random(in: 1.8...2.8, using: &rng),
+                            alpha: .random(in: 0.6...0.95, using: &rng),
+                            color: palette.randomElement(using: &rng)!,
+                            glow: 3)
+            }
+
+            // Camada 3: ~24 brilhantes com glow redondo
+            for _ in 0..<24 {
+                drawWrapped(x: .random(in: 0..<w, using: &rng),
+                            .random(in: 0..<h, using: &rng),
+                            radius: .random(in: 3.0...4.2, using: &rng),
+                            alpha: 1,
+                            color: palette.randomElement(using: &rng)!,
+                            glow: 7)
+            }
+        }
+        return await image.byPreparingForDisplay()
     }
 
     func updateUIView(_ uiView: SCNView, context: Context) {
@@ -321,7 +439,7 @@ struct GlobeView: UIViewRepresentable {
             vis.position = position
             earthNode.addChildNode(vis)
 
-            // Proxy de toque: invisível, ~2x maior — dedo não erra
+            // Proxy de toque: invisível, ~2x maior, dedo não erra
             let proxy = SCNSphere(radius: max(markerRadius(for: quake.magnitude) * 2.2, 0.035))
             let pm = SCNMaterial()
             pm.colorBufferWriteMask = []          // não desenha nada
@@ -395,6 +513,7 @@ struct GlobeView: UIViewRepresentable {
         weak var scnView: SCNView?
         var globeNode: SCNNode?
         var cameraNode: SCNNode?
+        var starNode: SCNNode?
 
         private var displayLink: CADisplayLink?
 
@@ -436,6 +555,9 @@ struct GlobeView: UIViewRepresentable {
             globeNode?.simdOrientation =
                 simd_quatf(angle: pitch, axis: SIMD3<Float>(1, 0, 0)) *
                 simd_quatf(angle: yaw, axis: SIMD3<Float>(0, 1, 0))
+
+            // Parallax: o céu acompanha a 10% da velocidade do globo
+            starNode?.eulerAngles = SCNVector3(pitch * 0.1, yaw * 0.1, 0)
         }
 
         @objc private func tick(_ link: CADisplayLink) {
