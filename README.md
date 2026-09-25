@@ -15,18 +15,25 @@ Real-time seismic activity on an interactive 3D globe.
 
 ## Features
 
-- Interactive 3D globe (SceneKit) with real Earth texture and drifting cloud layer
-- Live earthquake data from the USGS real-time feed (M2.5+, past 24h)
-- Markers scaled and colored by magnitude
-- Tap any marker for details: magnitude, place, relative time, depth, coordinates
-- Custom camera rig: inertia, zoom-proportional pan, smooth pinch zoom
+- **Interactive 3D Globe**: SceneKit with real Earth texture, drifting cloud layer and **procedural 4K starfield** (code-generated sky with parallax, zero image assets for the background).
+- **Haptic Feedback**: CoreHaptics engine scaling from M2.5 to M10 (tick, thunder, aftershock cascade, crescendo).
+- **Fly-To Camera**: Cinematic easing from favorites (shortest-arc) and direct approach on marker tap.
+- **Live Data**: USGS real-time feed (M2.5+, past 24h) with auto-refresh every 5 minutes.
+- **Visual Encoding**: Markers scaled and colored by magnitude (yellow/orange/red).
+- **Detail Sheet**: Tap any marker for magnitude, place, relative time, depth and coordinates.
+- **Favorites**: Persisted with SwiftData, medium/large detents, swipe-to-delete.
+- **Custom Camera Rig**: Inertia, zoom-proportional pan speed, smooth pinch zoom.
+- **Accessibility**: VoiceOver audio list ordered by magnitude with stable navigation frames.
+- **Performance**: Async texture decode and GPU prepare off the main thread.
 
 ## Stack
 
-- Swift / SwiftUI + UIKit (`UIViewRepresentable`)
-- SceneKit for the 3D globe and hit-testing
-- async/await + `Codable` for the USGS GeoJSON feed
-- Swift Testing for the model layer
+- **Swift / SwiftUI** + UIKit (`UIViewRepresentable`)
+- **SceneKit** for the 3D globe, hit-testing and particle-free starfield
+- **CoreHaptics** for the magnitude-proportional feedback
+- **SwiftData** for favorites persistence
+- **async/await** + `Codable` for the USGS GeoJSON feed
+- **Swift Testing** for the model layer
 
 ## Setup
 
@@ -38,13 +45,14 @@ Real-time seismic activity on an interactive 3D globe.
 
     QuakeGlobe/
     ├── Models/             # Earthquake, GeoJSON mapping, severity
-    ├── Services/           # EarthquakeService (USGS fetch)
-    ├── ContentView.swift   # GlobeView (SceneKit) + detail sheet
+    ├── Services/           # EarthquakeService (USGS fetch), HapticEngine
+    ├── Views/              # FavoritesListView
+    ├── ContentView.swift   # GlobeView (SceneKit) + detail sheet + camera logic
     └── QuakeGlobeTests/    # Swift Testing: decoding + severity
 
 ## Roadmap
 
-- Auto-refresh feed
-- Favorites with SwiftData
-- Fly-to animation on search
-- Loading/error states and VoiceOver labels
+- [ ] Search by location / place name
+- [ ] Push notifications for significant earthquakes (M5.0+)
+- [ ] Offline mode: cache de terremotos recentes
+- [ ] 4K Earth texture swap for sharper close-ups

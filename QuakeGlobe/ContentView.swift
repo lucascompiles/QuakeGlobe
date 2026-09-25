@@ -482,7 +482,7 @@ struct GlobeView: UIViewRepresentable {
 
     /// Céu procedural 4K: estrelas REDONDAS e nítidas, glow em gradiente
     /// radial, três camadas de profundidade, wrap horizontal sem emenda,
-    /// seed fixa. Sem asset, sem Single Scale.
+    /// seed fixa. Sem asset de imagem pro céu; Terra e nuvens usam texturas preparadas.
     private static func starfieldImage() async -> UIImage? {
         let w: CGFloat = 4096
         let h: CGFloat = 2048
