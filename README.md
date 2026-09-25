@@ -1,5 +1,13 @@
 # QuakeGlobe 🌍
 
+## Demo
+
+A 25-second tour: globe birth, rotation with inertia, fly-to, favorites and the haptic ladder.
+
+[Watch the demo (mp4, ~10 MB)](https://github.com/lucascompiles/QuakeGlobe/releases/download/v1.0/quakeglobe-demo.mp4)
+
+📳 **Haptics**: the app vibrates in proportion to magnitude, from a light tick at M2.5 to a thunderclap with aftershocks at M8.
+
 Real-time seismic activity on an interactive 3D globe.
 
 ![Globe](screenshots/globe.png)
